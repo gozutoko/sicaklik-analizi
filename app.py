@@ -138,4 +138,7 @@ if uploaded_file is not None:
                 max_rate = df['Artış Hızı (°C/s)'].max()
                 total_delta = max_temp - df[target_col].iloc[0]
                 
-                col_rap1, col_rap2, col_rap3 =
+                col_rap1, col_rap2, col_rap3 = st.columns(3)
+                col_rap1.metric(label=f"Maksimum {target_col} Sıcaklığı", value=f"{max_temp:.1f} °C")
+                col_rap2.metric(label="Toplam Sıcaklık Artışı (ΔT)", value=f"{total_delta:.1f} °C")
+                col_rap3.metric(label="En Yüksek Isınma Hızı", value=f"{max_rate:.3f} °C/s")
