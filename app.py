@@ -5,12 +5,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Gelişmiş Sıcaklık Analiz Programı", layout="wide")
-st.title("📈 Gelişmiş Termokupl ve Termal Kısma Analizi")
+st.set_page_config(page_title="Termal Kısma ve Denge Analizi", layout="wide")
+st.title("📈 Gelişmiş Termal Kısma (Throttling) ve Steady-State Analizi")
 
 st.markdown("""
-Bu araç ile verilerinizi saniye bazlı inceleyebilir, kanalları isimlendirebilir ve 
-**Ortam sıcaklığına bağlı akım/güç kısma (thermal throttling)** durumlarını değişim hızı (türev) ile tespit edebilirsiniz.
+Bu araç, ortam sıcaklığındaki değişimlere karşı cihazınızın akım/güç kısıp kısmadığını **ΔT (Cihaz - Ortam)** prensibiyle analiz eder.
+Zaman ekseni **Dakika** bazlıdır ve testteki farklı ortam sıcaklıklarındaki denge (steady-state) durumları otomatik raporlanır.
 """)
 
 # Dosya Yükleme
@@ -18,127 +18,141 @@ uploaded_file = st.file_uploader("Ölçüm CSV Dosyanızı Yükleyin", type=["cs
 
 if uploaded_file is not None:
     with st.spinner('Veriler işleniyor...'):
-        # Veriyi yükle ve temizle
         df = pd.read_csv(uploaded_file, skiprows=24)
         df = df.drop(0).reset_index(drop=True)
         df = df.replace('BURN OUT', np.nan)
         
-        # Kanalları bul
         temp_columns = [col for col in df.columns if col.startswith('CH')]
         for col in temp_columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-        # Sadece geçerli kanalları al
         valid_cols = [col for col in temp_columns if df[col].notna().any()]
-        
-        st.success("Veri başarıyla yüklendi!")
         
         st.divider()
 
-        # --- 1. AYARLAR VE İSİMLENDİRME BÖLÜMÜ ---
+        # --- 1. AYARLAR VE İSİMLENDİRME ---
         st.header("⚙️ 1. Veri Ayarları ve İsimlendirme")
         
         col_ayar1, col_ayar2 = st.columns(2)
         with col_ayar1:
-            # Örnekleme Hızı Ayarı
-            sampling_rate = st.number_input(
-                "Örnekleme Aralığı (Saniye)", 
-                min_value=0.1, value=1.0, step=0.1,
-                help="Her bir ölçüm satırı arasındaki saniye farkı"
-            )
+            sampling_rate = st.number_input("Örnekleme Aralığı (Saniye)", min_value=0.1, value=1.0, step=0.1)
         
-        # Zaman eksenini saniye olarak oluştur (0, 1, 2, 3... * sampling_rate)
-        df['Zaman (s)'] = df.index * sampling_rate
+        # Zaman eksenini DAKİKA olarak oluştur
+        df['Zaman (dk)'] = (df.index * sampling_rate) / 60.0
 
-        # Kanal İsimlendirme
         st.subheader("Kanalları İsimlendirin")
         renames = {}
         cols = st.columns(4)
         for i, col in enumerate(valid_cols):
             with cols[i % 4]:
-                new_name = st.text_input(f"'{col}' için yeni isim:", value=col)
+                new_name = st.text_input(f"'{col}' için yeni isim:", value=col, key=col)
                 renames[col] = new_name
                 
-        # Sütun isimlerini güncelle
         df = df.rename(columns=renames)
         valid_cols_renamed = list(renames.values())
 
         st.divider()
 
         # --- 2. GENEL GRAFİK BÖLÜMÜ ---
-        st.header("📊 2. Genel Sıcaklık Grafiği")
-        selected_cols = st.multiselect(
-            "Grafikte Gösterilecek Kanalları Seçin:", 
-            options=valid_cols_renamed, 
-            default=valid_cols_renamed
-        )
+        st.header("📊 2. Genel Sıcaklık Grafiği (Dakika Bazlı)")
+        selected_cols = st.multiselect("Grafikte Gösterilecek Kanalları Seçin:", options=valid_cols_renamed, default=valid_cols_renamed)
         
         if selected_cols:
-            fig = px.line(
-                df, 
-                x='Zaman (s)', 
-                y=selected_cols, 
-                title="Saniye Bazlı Sıcaklık Değişimi", 
-            )
-            # Eksen isimlendirmeleri
-            fig.update_layout(
-                xaxis_title="Zaman (Saniye)",
-                yaxis_title="Sıcaklık (°C)",
-                hovermode="x unified",
-                legend_title_text="Kanallar"
-            )
+            fig = px.line(df, x='Zaman (dk)', y=selected_cols, title="Zaman İçerisinde Sıcaklık Değişimi")
+            fig.update_layout(xaxis_title="Zaman (Dakika)", yaxis_title="Sıcaklık (°C)", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
             
             st.divider()
 
-            # --- 3. AKIM KISMA (THROTTLING) VE ARTIS ANALİZİ ---
-            st.header("🔍 3. Akım Kısma ve Sıcaklık Artış Analizi")
+            # --- 3. AKIM KISMA VE STEADY-STATE ANALİZİ ---
+            st.header("⚡ 3. Akım Kısma (Thermal Throttling) Analizi")
             st.markdown("""
-            Bu bölüm, ortam sıcaklığının artmasıyla fırının/cihazın gücünü kestiği anları tespit etmek içindir. 
-            **Sıcaklık Artış Hızı (°C/s)** eğrisi sıfıra veya eksiye doğru keskin bir düşüş yapıyorsa, sistem akım kısmış demektir.
+            **Nasıl Çalışır?** Sistem, referans kabul edilen maksimum ΔT değerini 100% güç (nominal akım) olarak kabul eder. 
+            Ortam sıcaklığı arttığında cihaz sıcaklığı aynı oranda artmıyorsa (ΔT daralıyorsa), bu daralma oranı kadar akım kısıldığı hesaplanır.
             """)
             
             col_analiz1, col_analiz2, col_analiz3 = st.columns(3)
             with col_analiz1:
                 ambient_col = st.selectbox("Ortam Sıcaklığı Kanalı:", options=selected_cols)
             with col_analiz2:
-                target_col = st.selectbox("Hedef (Cihaz/İç) Kanalı:", options=[c for c in selected_cols if c != ambient_col] + [ambient_col])
+                target_col = st.selectbox("Cihaz/Test Kanalı:", options=[c for c in selected_cols if c != ambient_col])
             with col_analiz3:
-                window_size = st.slider("Hassasiyet (Yumuşatma Penceresi)", min_value=1, max_value=60, value=10, help="Değişim hızındaki anlık gürültüleri filtrelemek için veri noktası sayısı.")
+                nominal_current = st.number_input("Giriş Akımı / Nominal Akım (mA)", value=1000.0, step=100.0)
 
             if target_col and ambient_col:
-                # Sıcaklık değişim hızını (Türev - dT/dt) hesapla
-                # .diff() ile farkı alıp, geçen süreye bölüyoruz. Gürültüyü azaltmak için rolling mean yapıyoruz.
-                df['Artış Hızı (°C/s)'] = df[target_col].diff() / sampling_rate
-                df['Artış Hızı (°C/s)'] = df['Artış Hızı (°C/s)'].rolling(window=window_size).mean()
-
-                # Çift Y eksenli grafik oluştur (Sol: Sıcaklık, Sağ: Artış Hızı)
-                fig_analiz = make_subplots(specs=[[{"secondary_y": True}]])
-
-                # Sıcaklıkları ekle (Sol eksen)
-                fig_analiz.add_trace(go.Scatter(x=df['Zaman (s)'], y=df[target_col], name=f"{target_col} Sıcaklığı", line=dict(color='red')), secondary_y=False)
-                fig_analiz.add_trace(go.Scatter(x=df['Zaman (s)'], y=df[ambient_col], name=f"{ambient_col} Sıcaklığı", line=dict(color='blue', dash='dash')), secondary_y=False)
+                # Delta T Hesaplama
+                df['Delta T'] = df[target_col] - df[ambient_col]
                 
-                # Artış Hızını ekle (Sağ eksen)
-                fig_analiz.add_trace(go.Scatter(x=df['Zaman (s)'], y=df['Artış Hızı (°C/s)'], name=f"{target_col} Artış Hızı (Güç Göstergesi)", line=dict(color='green', width=2), fill='tozeroy', fillcolor='rgba(0, 255, 0, 0.1)'), secondary_y=True)
-
-                fig_analiz.update_layout(
-                    title_text=f"{target_col} Isınma Karakteristiği ve Güç Kısma Tespiti",
-                    hovermode="x unified"
-                )
-                fig_analiz.update_yaxes(title_text="Sıcaklık (°C)", secondary_y=False)
-                fig_analiz.update_yaxes(title_text="Artış Hızı (°C / Saniye)", secondary_y=True, showgrid=False)
-                fig_analiz.update_xaxes(title_text="Zaman (Saniye)")
-
-                st.plotly_chart(fig_analiz, use_container_width=True)
-
-                # Detaylı Değerlendirme Çıktıları
-                st.subheader("📋 Artış Değerlendirme Raporu")
-                max_temp = df[target_col].max()
-                max_rate = df['Artış Hızı (°C/s)'].max()
-                total_delta = max_temp - df[target_col].iloc[0]
+                # Cihazın nominal akımda çalıştığı kabul edilen en yüksek Delta T değeri
+                max_delta_t = df['Delta T'].max()
+                ref_delta_t = st.number_input("Referans ΔT (°C) (Akımın %100 kabul edildiği sıcaklık farkı)", value=float(max_delta_t))
                 
-                col_rap1, col_rap2, col_rap3 = st.columns(3)
-                col_rap1.metric(label=f"Maksimum {target_col} Sıcaklığı", value=f"{max_temp:.1f} °C")
-                col_rap2.metric(label="Toplam Sıcaklık Artışı (ΔT)", value=f"{total_delta:.1f} °C")
-                col_rap3.metric(label="En Yüksek Isınma Hızı", value=f"{max_rate:.3f} °C/s")
+                # Akım ve Kısma (%) Hesaplamaları
+                df['Tahmini Akım (mA)'] = nominal_current * (df['Delta T'] / ref_delta_t)
+                df['Tahmini Akım (mA)'] = df['Tahmini Akım (mA)'].clip(upper=nominal_current, lower=0) # Akım nominali geçemez
+                df['Akım Kısma Oranı (%)'] = 100 * (1 - (df['Tahmini Akım (mA)'] / nominal_current))
+                df['Akım Kısma Oranı (%)'] = df['Akım Kısma Oranı (%)'].clip(lower=0)
+
+                # Kapsamlı Grafik (Çift Eksen)
+                fig_throttle = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                # Sıcaklıklar
+                fig_throttle.add_trace(go.Scatter(x=df['Zaman (dk)'], y=df[target_col], name=f"{target_col} (°C)", line=dict(color='red')), secondary_y=False)
+                fig_throttle.add_trace(go.Scatter(x=df['Zaman (dk)'], y=df[ambient_col], name=f"{ambient_col} (°C)", line=dict(color='blue', dash='dot')), secondary_y=False)
+                
+                # Akım (mA)
+                fig_throttle.add_trace(go.Scatter(x=df['Zaman (dk)'], y=df['Tahmini Akım (mA)'], name="Anlık Akım (mA)", line=dict(color='green', width=2), fill='tozeroy', fillcolor='rgba(0, 255, 0, 0.1)'), secondary_y=True)
+
+                fig_throttle.update_layout(title_text="Sıcaklık ve Çekilen Akım Korelasyonu", hovermode="x unified")
+                fig_throttle.update_yaxes(title_text="Sıcaklık (°C)", secondary_y=False)
+                fig_throttle.update_yaxes(title_text="Çekilen Akım (mA)", secondary_y=True, range=[0, nominal_current*1.1])
+                fig_throttle.update_xaxes(title_text="Zaman (Dakika)")
+                
+                st.plotly_chart(fig_throttle, use_container_width=True)
+
+                st.divider()
+
+                # --- 4. FARKLI ORTAM SICAKLIKLARI İÇİN STEADY STATE ÖZETİ ---
+                st.header("🌡️ Farklı Ortam Sıcaklıklarında Performans (Steady-State Özeti)")
+                st.write("Aşağıdaki tablo, sıcaklık artış hızının durduğu (sistemin dengeye ulaştığı) kısımları farklı ortam sıcaklıklarına göre gruplayıp filtreler.")
+
+                # Değişim Hızı (Türev) - Denge durumunu bulmak için
+                # 1 dakikalık pencerede sıcaklık değişim hızını hesapla
+                window_size = int(60 / sampling_rate) if sampling_rate < 60 else 2
+                df['dT/dt'] = df[target_col].diff(periods=window_size).abs()
+                
+                # Steady-state kabul şartı: 1 dakikadaki değişim 0.5 dereceden az ise
+                steady_state_df = df[df['dT/dt'] < 0.5].copy()
+                
+                # Ortam sıcaklığını en yakın tam sayıya yuvarlayarak bölgeleri (zonları) grupla
+                steady_state_df['Ortam Zonu (°C)'] = steady_state_df[ambient_col].round()
+                
+                if not steady_state_df.empty:
+                    summary = steady_state_df.groupby('Ortam Zonu (°C)').agg(
+                        Denge_Sicakligi=(target_col, 'mean'),
+                        Ortalama_Delta_T=('Delta T', 'mean'),
+                        Tahmini_Akim=('Tahmini Akım (mA)', 'mean'),
+                        Kisma_Yuzdesi=('Akım Kısma Oranı (%)', 'mean'),
+                        Veri_Noktasi_Sayisi=('Zaman (dk)', 'count')
+                    ).reset_index()
+                    
+                    # Veri sayısı çok az olan anlık takılmaları (gürültüleri) filtrele
+                    summary = summary[summary['Veri_Noktasi_Sayisi'] > (window_size * 2)]
+                    
+                    # Tabloyu formatla
+                    summary = summary.rename(columns={
+                        'Denge_Sicakligi': f"{target_col} Denge Sıcaklığı (°C)",
+                        'Ortalama_Delta_T': "ΔT (Cihaz - Ortam)",
+                        'Tahmini_Akim': "Çekilen Akım (mA)",
+                        'Kisma_Yuzdesi': "Güç Kısma (%)"
+                    })
+                    
+                    st.dataframe(summary.style.format({
+                        f"{target_col} Denge Sıcaklığı (°C)": "{:.1f}",
+                        "ΔT (Cihaz - Ortam)": "{:.1f}",
+                        "Çekilen Akım (mA)": "{:.0f}",
+                        "Güç Kısma (%)": "{:.1f}%",
+                        "Veri_Noktasi_Sayisi": "{:.0f}"
+                    }), use_container_width=True)
+                else:
+                    st.warning("Verilerde belirgin bir 'Steady-State' (Denge) noktası tespit edilemedi. Sıcaklık sürekli değişim halinde olabilir.")
